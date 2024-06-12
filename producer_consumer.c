@@ -151,33 +151,43 @@ static int __init producer_consumer_init(void)
     sema_init(&full, 0);
     sema_init(&mutex, 1);
 
-    producer_thread = kthread_run(producer_function, NULL, "producer_thread");
-    if (IS_ERR(producer_thread)) {
-        pr_err("Failed to create producer thread\n");
-        kfree(buffer);
-        return PTR_ERR(producer_thread);
-    }
-
-    consumer_threads = kmalloc_array(cons, sizeof(struct task_struct *), GFP_KERNEL);
-    if (!consumer_threads) {
-        pr_err("Failed to allocate consumer threads\n");
-        kthread_stop(producer_thread);
-        kfree(buffer);
-        return -ENOMEM;
-    }
-
-    for (i = 0; i < cons; i++) {
-        consumer_threads[i] = kthread_run(consumer_function, NULL, "consumer_thread-%d", i);
-        if (IS_ERR(consumer_threads[i])) {
-            pr_err("Failed to create consumer thread %d\n", i);
-            for (int j = 0; j < i; j++) {
-                kthread_stop(consumer_threads[j]);
-            }
-            kthread_stop(producer_thread);
+    if (prod > 0) {
+        producer_thread = kthread_run(producer_function, NULL, "producer_thread");
+        if (IS_ERR(producer_thread)) {
+            pr_err("Failed to create producer thread\n");
             kfree(buffer);
-            kfree(consumer_threads);
-            return PTR_ERR(consumer_threads[i]);
+            return PTR_ERR(producer_thread);
         }
+    } else {
+        producer_thread = NULL;
+    }
+
+    if (cons > 0) {
+        consumer_threads = kmalloc_array(cons, sizeof(struct task_struct *), GFP_KERNEL);
+        if (!consumer_threads) {
+            pr_err("Failed to allocate consumer threads\n");
+            if (producer_thread)
+                kthread_stop(producer_thread);
+            kfree(buffer);
+            return -ENOMEM;
+        }
+
+        for (i = 0; i < cons; i++) {
+            consumer_threads[i] = kthread_run(consumer_function, NULL, "consumer_thread-%d", i);
+            if (IS_ERR(consumer_threads[i])) {
+                pr_err("Failed to create consumer thread %d\n", i);
+                for (int j = 0; j < i; j++) {
+                    kthread_stop(consumer_threads[j]);
+                }
+                if (producer_thread)
+                    kthread_stop(producer_thread);
+                kfree(buffer);
+                kfree(consumer_threads);
+                return PTR_ERR(consumer_threads[i]);
+            }
+        }
+    } else {
+        consumer_threads = NULL;
     }
 
     pr_info("Module loaded\n");
@@ -188,20 +198,22 @@ static void __exit producer_consumer_exit(void)
 {
     int i;
 
-    pr_info("Stopping producer thread\n");
-    if (!IS_ERR(producer_thread)) {
+    if (producer_thread) {
+        pr_info("Stopping producer thread\n");
         kthread_stop(producer_thread);
     }
 
-    pr_info("Stopping consumer threads\n");
-    for (i = 0; i < cons; i++) {
-        if (!IS_ERR(consumer_threads[i])) {
-            kthread_stop(consumer_threads[i]);
+    if (consumer_threads) {
+        pr_info("Stopping consumer threads\n");
+        for (i = 0; i < cons; i++) {
+            if (!IS_ERR(consumer_threads[i])) {
+                kthread_stop(consumer_threads[i]);
+            }
         }
+        kfree(consumer_threads);
     }
 
     kfree(buffer);
-    kfree(consumer_threads);
 
     pr_info("Total number of items produced: %d\n", total_no_of_process_produced);
     pr_info("Total number of items consumed: %d\n", total_no_of_process_consumed);
