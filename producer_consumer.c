@@ -1,62 +1,20 @@
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/syscalls.h>
-#include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/cred.h>
-#include <linux/tty.h>
-#include <linux/uidgid.h>
-#include <linux/slab.h>
-#include <linux/mutex.h>
-#include <linux/kthread.h>
-#include <linux/string.h>
-#include <linux/semaphore.h>
 #include <linux/delay.h>
-#include <asm/uaccess.h>
-#include <asm/param.h>
-#include <linux/timer.h>
-#include <linux/ktime.h>
-#include <linux/time_namespace.h>
-#include <linux/time.h>
-#include <linux/proc_fs.h>
+#include <linux/kthread.h>
+#include <linux/semaphore.h>
 #include <linux/slab.h>
+#include <linux/sched/signal.h>
+#include <linux/cred.h>
+#include <linux/timekeeping.h>
 
-#define MAX_BUFFER_SIZE 500
-#define MAX_NO_OF_PRODUCERS 1
-#define MAX_NO_OF_CONSUMERS 100
+MODULE_LICENSE("GPL");
 
-#define PCINFO(s, ...) pr_info("###[%s]###" s, __FUNCTION__, ##__VA_ARGS__)
-
-unsigned long long total_time_elapsed = 0;
-
-// Use this struct to store the process information
-struct process_info
-{
-	unsigned long pid;
-	unsigned long long start_time;
-	unsigned long long boot_time;
-} process_default_info = {0, 0};
-
-int total_no_of_process_produced = 0;
-int total_no_of_process_consumed = 0;
-
-int end_flag = 0;
-
-char producers[MAX_NO_OF_PRODUCERS][12] = {"kProducer-X"};
-char consumers[MAX_NO_OF_CONSUMERS][12] = {"kConsumer-X"};
-
-static struct task_struct *ctx_producer_thread[MAX_NO_OF_PRODUCERS];
-static struct task_struct *ctx_consumer_thread[MAX_NO_OF_CONSUMERS];
-
-// Use fill and use to keep track of the buffer
-struct process_info buffer[MAX_BUFFER_SIZE];
-int fill = 0;
-int use = 0;
-
-// Input parameters
+// Module parameters
 static int buffSize = 10;
 static int prod = 1;
-static int cons = 1;
+static int cons = 2;
 static int uuid = 1000;
 
 module_param(buffSize, int, 0);
@@ -68,216 +26,163 @@ MODULE_PARM_DESC(cons, "Number of consumers");
 module_param(uuid, int, 0);
 MODULE_PARM_DESC(uuid, "User ID");
 
-// Define semaphores
-static struct semaphore empty, full, mutex;
+struct task_struct **buffer;
+int buffer_head = 0, buffer_tail = 0;
+static struct semaphore full, empty, mutex;
+static int end_flag = 0;
 
-int producer_thread_function(void *pv)
+static int producer_function(void *data)
 {
-	allow_signal(SIGKILL);
 	struct task_struct *task;
+	pr_info("Producer thread started\n");
 
 	for_each_process(task)
 	{
 		if (task->cred->uid.val == uuid)
 		{
-			if (kthread_should_stop())
-				break;
-
 			down(&empty);
 			down(&mutex);
-
-			buffer[fill].pid = task->pid;
-			buffer[fill].start_time = task->start_time;
-			buffer[fill].boot_time = ktime_get_boottime_ns();
-			fill = (fill + 1) % buffSize;
-
+			buffer[buffer_head] = task;
+			buffer_head = (buffer_head + 1) % buffSize;
 			up(&mutex);
 			up(&full);
-
-			total_no_of_process_produced++;
-			PCINFO("[%s] Produce-Item#:%d at buffer index: %d for PID:%d\n", current->comm,
-				   total_no_of_process_produced, (fill + buffSize - 1) % buffSize, task->pid);
 		}
 	}
-
-	PCINFO("[%s] Producer Thread stopped.\n", current->comm);
-	ctx_producer_thread[0] = NULL;
+	end_flag = 1;
+	pr_info("Producer thread finished\n");
 	return 0;
 }
 
-int consumer_thread_function(void *pv)
+static int consumer_function(void *data)
 {
-	allow_signal(SIGKILL);
-	int no_of_process_consumed = 0;
+	unsigned long total_elapsed_time = 0;
+	pr_info("Consumer thread started\n");
 
-	while (!kthread_should_stop())
+	while (!end_flag || (down_trylock(&full) == 0))
 	{
-		if (end_flag)
+		if (end_flag && down_trylock(&full))
+		{
 			break;
-
+		}
 		down(&full);
 		down(&mutex);
-
-		struct process_info process = buffer[use];
-		use = (use + 1) % buffSize;
-
+		struct task_struct *task = buffer[buffer_tail];
+		buffer_tail = (buffer_tail + 1) % buffSize;
 		up(&mutex);
 		up(&empty);
 
-		if (process.pid != 0)
+		if (task)
 		{
-			unsigned long long ktime = ktime_get_ns();
-			unsigned long long process_time_elapsed = (ktime - process.start_time) / 1000000000;
-			total_time_elapsed += ktime - process.start_time;
-
-			unsigned long long process_time_hr = process_time_elapsed / 3600;
-			unsigned long long process_time_min = (process_time_elapsed - 3600 * process_time_hr) / 60;
-			unsigned long long process_time_sec = (process_time_elapsed - 3600 * process_time_hr) - (process_time_min * 60);
-
-			no_of_process_consumed++;
-			total_no_of_process_consumed++;
-			PCINFO("[%s] Consumed Item#-%d on buffer index:%d::PID:%lu \t Elapsed Time %llu:%llu:%llu\n", current->comm,
-				   no_of_process_consumed, (use + buffSize - 1) % buffSize, process.pid, process_time_hr, process_time_min, process_time_sec);
+			struct timespec64 now, boot_time;
+			ktime_get_real_ts64(&now);
+			boot_time = ns_to_timespec64(task->start_time);
+			total_elapsed_time += now.tv_sec - boot_time.tv_sec;
 		}
 	}
-
-	PCINFO("[%s] Consumer Thread stopped.\n", current->comm);
+	pr_info("Total elapsed time: %lu\n", total_elapsed_time);
+	pr_info("Consumer thread finished\n");
 	return 0;
 }
 
-char *replace_char(char *str, char find, char replace)
-{
-	char *current_pos = strchr(str, find);
-	while (current_pos)
-	{
-		*current_pos = replace;
-		current_pos = strchr(current_pos, find);
-	}
-	return str;
-}
+static struct task_struct *producer_thread;
+static struct task_struct **consumer_threads;
 
-void name_threads(void)
+static int __init producer_consumer_init(void)
 {
-	for (int index = 0; index < prod; index++)
+	int i;
+
+	pr_info("Initializing buffer\n");
+	buffer = kmalloc_array(buffSize, sizeof(struct task_struct *), GFP_KERNEL);
+	if (!buffer)
 	{
-		char id = (index + 1) + '0';
-		strcpy(producers[index], "kProducer-X");
-		strcpy(producers[index], replace_char(producers[index], 'X', id));
+		pr_err("Failed to allocate buffer\n");
+		return -ENOMEM;
 	}
 
-	for (int index = 0; index < cons; index++)
+	sema_init(&full, 0);
+	sema_init(&empty, buffSize);
+	sema_init(&mutex, 1);
+
+	if (prod == 1)
 	{
-		char id = (index + 1) + '0';
-		strcpy(consumers[index], "kConsumer-X");
-		strcpy(consumers[index], replace_char(consumers[index], 'X', id));
-	}
-}
-
-static int __init thread_init_module(void)
-{
-	PCINFO("CSE330 Project-1 Kernel Module Inserted\n");
-	PCINFO("Kernel module received the following inputs: UID:%d, Buffer-Size:%d, No of Producer:%d, No of Consumer:%d", uuid, buffSize, prod, cons);
-
-	if (buffSize > 0 && (prod >= 0 && prod < 2) && (cons > 0))
-	{
-		sema_init(&empty, buffSize);
-		sema_init(&full, 0);
-		sema_init(&mutex, 1);
-
-		name_threads();
-
-		for (int index = 0; index < buffSize; index++)
-			buffer[index] = process_default_info;
-
-		for (int index = 0; index < prod; index++)
+		pr_info("Creating producer thread\n");
+		producer_thread = kthread_run(producer_function, NULL, "producer_thread");
+		if (IS_ERR(producer_thread))
 		{
-			ctx_producer_thread[index] = kthread_run(producer_thread_function, NULL, producers[index]);
-			if (IS_ERR(ctx_producer_thread[index]))
-			{
-				pr_err("Failed to create producer thread %d\n", index);
-				return PTR_ERR(ctx_producer_thread[index]);
-			}
-		}
-
-		for (int index = 0; index < cons; index++)
-		{
-			ctx_consumer_thread[index] = kthread_run(consumer_thread_function, NULL, consumers[index]);
-			if (IS_ERR(ctx_consumer_thread[index]))
-			{
-				pr_err("Failed to create consumer thread %d\n", index);
-				return PTR_ERR(ctx_consumer_thread[index]);
-			}
+			pr_err("Failed to create producer thread\n");
+			kfree(buffer);
+			return PTR_ERR(producer_thread);
 		}
 	}
-	else
+
+	pr_info("Creating consumer threads\n");
+	consumer_threads = kmalloc_array(cons, sizeof(struct task_struct *), GFP_KERNEL);
+	if (!consumer_threads)
 	{
-		PCINFO("Incorrect Input Parameter Configuration Received. No kernel threads started. Please check input parameters.");
-		PCINFO("The kernel module expects buffer size (a positive number) and # of producers(0 or 1) and # of consumers > 0");
+		pr_err("Failed to allocate consumer threads\n");
+		if (prod == 1)
+		{
+			kthread_stop(producer_thread);
+		}
+		kfree(buffer);
+		return -ENOMEM;
 	}
 
+	for (i = 0; i < cons; i++)
+	{
+		consumer_threads[i] = kthread_run(consumer_function, NULL, "consumer_thread-%d", i);
+		if (IS_ERR(consumer_threads[i]))
+		{
+			pr_err("Failed to create consumer thread %d\n", i);
+			for (int j = 0; j < i; j++)
+			{
+				if (!IS_ERR(consumer_threads[j]))
+				{
+					kthread_stop(consumer_threads[j]);
+				}
+			}
+			if (prod == 1)
+			{
+				kthread_stop(producer_thread);
+			}
+			kfree(buffer);
+			kfree(consumer_threads);
+			return PTR_ERR(consumer_threads[i]);
+		}
+	}
+
+	pr_info("Module loaded\n");
 	return 0;
 }
 
-static void __exit thread_exit_module(void)
+static void __exit producer_consumer_exit(void)
 {
-	if (buffSize > 0)
+	int i;
+
+	pr_info("Stopping producer thread\n");
+	if (prod == 1)
 	{
-		while (1)
+		if (!IS_ERR(producer_thread))
 		{
-			if (total_no_of_process_consumed == total_no_of_process_produced || !cons || !prod)
-			{
-				if (!cons)
-				{
-					up(&empty);
-				}
-
-				for (int index = 0; index < prod; index++)
-				{
-					if (ctx_producer_thread[index])
-					{
-						kthread_stop(ctx_producer_thread[index]);
-					}
-				}
-
-				end_flag = 1;
-
-				for (int index = 0; index < cons; index++)
-				{
-					up(&full);
-					up(&mutex);
-				}
-
-				for (int index = 0; index < cons; index++)
-				{
-					if (ctx_consumer_thread[index])
-					{
-						kthread_stop(ctx_consumer_thread[index]);
-					}
-				}
-				break;
-			}
-			else
-				continue;
+			kthread_stop(producer_thread);
 		}
-
-		total_time_elapsed = total_time_elapsed / 1000000000;
-
-		unsigned long long total_time_hr = total_time_elapsed / 3600;
-		unsigned long long total_time_min = (total_time_elapsed - 3600 * total_time_hr) / 60;
-		unsigned long long total_time_sec = (total_time_elapsed - 3600 * total_time_hr) - (total_time_min * 60);
-
-		PCINFO("Total number of items produced: %d", total_no_of_process_produced);
-		PCINFO("Total number of items consumed: %d", total_no_of_process_consumed);
-		PCINFO("The total elapsed time of all processes for UID %d is \t%llu:%llu:%llu\n", uuid, total_time_hr, total_time_min, total_time_sec);
 	}
 
-	PCINFO("CSE330 Project 1 Kernel Module Removed\n");
+	pr_info("Stopping consumer threads\n");
+	for (i = 0; i < cons; i++)
+	{
+		if (!IS_ERR(consumer_threads[i]))
+		{
+			kthread_stop(consumer_threads[i]);
+		}
+	}
+
+	pr_info("Freeing allocated memory\n");
+	kfree(buffer);
+	kfree(consumer_threads);
+
+	pr_info("Module unloaded successfully\n");
 }
 
-module_init(thread_init_module);
-module_exit(thread_exit_module);
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Your Name Here");
-MODULE_DESCRIPTION("CSE330 2023 Fall Project 1 Process Management\n");
-MODULE_VERSION("0.1");
+module_init(producer_consumer_init);
+module_exit(producer_consumer_exit);
