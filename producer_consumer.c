@@ -22,7 +22,7 @@
 #include <linux/proc_fs.h>
 #include <linux/slab.h>
 
-#define MAX_BUFFER_SIZE 50000000
+#define MAX_BUFFER_SIZE 500
 #define MAX_NO_OF_PRODUCERS 1
 #define MAX_NO_OF_CONSUMERS 100
 
