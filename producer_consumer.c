@@ -9,6 +9,7 @@
 #include <linux/timekeeping.h>
 #include <linux/signal.h>
 #include <linux/list.h>
+#include <linux/rculist.h>
 
 MODULE_LICENSE("GPL");
 
