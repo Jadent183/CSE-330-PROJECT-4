@@ -147,9 +147,13 @@ static int __init producer_consumer_init(void)
         return -ENOMEM;
     }
 
+    pr_info("Buffer allocated successfully\n");
+
     sema_init(&empty, buffSize);
     sema_init(&full, 0);
     sema_init(&mutex, 1);
+
+    pr_info("Semaphores initialized\n");
 
     if (prod > 0) {
         producer_thread = kthread_run(producer_function, NULL, "producer_thread");
@@ -158,6 +162,7 @@ static int __init producer_consumer_init(void)
             kfree(buffer);
             return PTR_ERR(producer_thread);
         }
+        pr_info("Producer thread created\n");
     } else {
         producer_thread = NULL;
     }
@@ -172,6 +177,8 @@ static int __init producer_consumer_init(void)
             return -ENOMEM;
         }
 
+        pr_info("Consumer threads allocated\n");
+
         for (i = 0; i < cons; i++) {
             consumer_threads[i] = kthread_run(consumer_function, NULL, "consumer_thread-%d", i);
             if (IS_ERR(consumer_threads[i])) {
@@ -185,6 +192,7 @@ static int __init producer_consumer_init(void)
                 kfree(consumer_threads);
                 return PTR_ERR(consumer_threads[i]);
             }
+            pr_info("Consumer thread %d created\n", i);
         }
     } else {
         consumer_threads = NULL;
