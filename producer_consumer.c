@@ -12,12 +12,10 @@
 #include <linux/string.h>
 #include <linux/semaphore.h>
 #include <linux/delay.h>
-#include <asm/uaccess.h>
-#include <asm/param.h>
+#include <linux/time.h>
 #include <linux/timer.h>
 #include <linux/ktime.h>
 #include <linux/time_namespace.h>
-#include <linux/time.h>
 
 #include <linux/proc_fs.h>
 #include <linux/slab.h>
