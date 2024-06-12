@@ -1,14 +1,26 @@
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/syscalls.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/cred.h>
-#include <linux/kthread.h>
-#include <linux/semaphore.h>
+#include <linux/tty.h>
+#include <linux/uidgid.h>
 #include <linux/slab.h>
-#include <linux/timekeeping.h>
-#include <linux/signal.h>
-#include <linux/list.h>
+#include <linux/mutex.h>
+#include <linux/kthread.h>
+#include <linux/string.h>
+#include <linux/semaphore.h>
+#include <linux/delay.h>
+#include <asm/uaccess.h>
+#include <asm/param.h>
+#include <linux/timer.h>
+#include <linux/ktime.h>
+#include <linux/time_namespace.h>
+#include <linux/time.h>
+
+#include <linux/proc_fs.h>
+#include <linux/slab.h>
 
 MODULE_LICENSE("GPL");
 
