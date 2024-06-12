@@ -73,8 +73,8 @@ static struct semaphore empty, full, mutex;
 
 int producer_thread_function(void *pv)
 {
-	allow_signal(SIGKILL);
 	struct task_struct *task;
+	allow_signal(SIGKILL);
 
 	for_each_process(task)
 	{
@@ -107,8 +107,10 @@ int producer_thread_function(void *pv)
 
 int consumer_thread_function(void *pv)
 {
-	allow_signal(SIGKILL);
 	int no_of_process_consumed = 0;
+	struct process_info process;
+	unsigned long long ktime, process_time_elapsed, process_time_hr, process_time_min, process_time_sec;
+	allow_signal(SIGKILL);
 
 	while (!kthread_should_stop())
 	{
@@ -118,7 +120,7 @@ int consumer_thread_function(void *pv)
 		down(&full);
 		down(&mutex);
 
-		struct process_info process = buffer[use];
+		process = buffer[use];
 		use = (use + 1) % buffSize;
 
 		up(&mutex);
@@ -126,13 +128,13 @@ int consumer_thread_function(void *pv)
 
 		if (process.pid != 0)
 		{
-			unsigned long long ktime = ktime_get_ns();
-			unsigned long long process_time_elapsed = (ktime - process.start_time) / 1000000000;
+			ktime = ktime_get_ns();
+			process_time_elapsed = (ktime - process.start_time) / 1000000000;
 			total_time_elapsed += ktime - process.start_time;
 
-			unsigned long long process_time_hr = process_time_elapsed / 3600;
-			unsigned long long process_time_min = (process_time_elapsed - 3600 * process_time_hr) / 60;
-			unsigned long long process_time_sec = (process_time_elapsed - 3600 * process_time_hr) - (process_time_min * 60);
+			process_time_hr = process_time_elapsed / 3600;
+			process_time_min = (process_time_elapsed - 3600 * process_time_hr) / 60;
+			process_time_sec = (process_time_elapsed - 3600 * process_time_hr) - (process_time_min * 60);
 
 			no_of_process_consumed++;
 			total_no_of_process_consumed++;
@@ -158,16 +160,18 @@ char *replace_char(char *str, char find, char replace)
 
 void name_threads(void)
 {
-	for (int index = 0; index < prod; index++)
+	int index;
+	char id;
+	for (index = 0; index < prod; index++)
 	{
-		char id = (index + 1) + '0';
+		id = (index + 1) + '0';
 		strcpy(producers[index], "kProducer-X");
 		strcpy(producers[index], replace_char(producers[index], 'X', id));
 	}
 
-	for (int index = 0; index < cons; index++)
+	for (index = 0; index < cons; index++)
 	{
-		char id = (index + 1) + '0';
+		id = (index + 1) + '0';
 		strcpy(consumers[index], "kConsumer-X");
 		strcpy(consumers[index], replace_char(consumers[index], 'X', id));
 	}
@@ -220,6 +224,8 @@ static int __init thread_init_module(void)
 
 static void __exit thread_exit_module(void)
 {
+	int index;
+
 	if (buffSize > 0)
 	{
 		while (1)
@@ -231,7 +237,7 @@ static void __exit thread_exit_module(void)
 					up(&empty);
 				}
 
-				for (int index = 0; index < prod; index++)
+				for (index = 0; index < prod; index++)
 				{
 					if (ctx_producer_thread[index])
 					{
@@ -241,13 +247,13 @@ static void __exit thread_exit_module(void)
 
 				end_flag = 1;
 
-				for (int index = 0; index < cons; index++)
+				for (index = 0; index < cons; index++)
 				{
 					up(&full);
 					up(&mutex);
 				}
 
-				for (int index = 0; index < cons; index++)
+				for (index = 0; index < cons; index++)
 				{
 					if (ctx_consumer_thread[index])
 					{
