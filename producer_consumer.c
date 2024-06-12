@@ -9,7 +9,6 @@
 #include <linux/timekeeping.h>
 #include <linux/signal.h>
 #include <linux/list.h>
-#include <linux/rculist.h>
 
 MODULE_LICENSE("GPL");
 
@@ -56,7 +55,6 @@ static int producer_function(void *data)
 
     rcu_read_lock();
     for_each_process(task) {
-        get_task_struct(task);
         if (task->cred->uid.val == uuid) {
             if (kthread_should_stop()) break;
 
@@ -75,7 +73,6 @@ static int producer_function(void *data)
             pr_info("[%s] Produce-Item#:%d at buffer index: %d for PID:%lu\n", current->comm,
                    total_no_of_process_produced, (fill + buffSize - 1) % buffSize, task->pid);
         }
-        put_task_struct(task);
     }
     rcu_read_unlock();
 
