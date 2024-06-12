@@ -7,6 +7,8 @@
 #include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <linux/timekeeping.h>
+#include <linux/signal.h>
+#include <linux/list.h>
 
 MODULE_LICENSE("GPL");
 
@@ -52,8 +54,10 @@ static int producer_function(void *data)
 	struct task_struct *task;
 	allow_signal(SIGKILL);
 
+	rcu_read_lock();
 	for_each_process(task)
 	{
+		get_task_struct(task);
 		if (task->cred->uid.val == uuid)
 		{
 			if (kthread_should_stop())
@@ -74,7 +78,9 @@ static int producer_function(void *data)
 			pr_info("[%s] Produce-Item#:%d at buffer index: %d for PID:%lu\n", current->comm,
 					total_no_of_process_produced, (fill + buffSize - 1) % buffSize, task->pid);
 		}
+		put_task_struct(task);
 	}
+	rcu_read_unlock();
 
 	end_flag = 1;
 	pr_info("[%s] Producer Thread stopped.\n", current->comm);
