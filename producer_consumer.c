@@ -18,7 +18,6 @@
 #include <linux/ktime.h>
 #include <linux/time_namespace.h>
 #include <linux/time.h>
-
 #include <linux/proc_fs.h>
 #include <linux/slab.h>
 
@@ -30,7 +29,7 @@
 
 unsigned long long total_time_elapsed = 0;
 
-// use this struct to store the process information
+// Use this struct to store the process information
 struct process_info
 {
 	unsigned long pid;
@@ -49,15 +48,28 @@ char consumers[MAX_NO_OF_CONSUMERS][12] = {"kConsumer-X"};
 static struct task_struct *ctx_producer_thread[MAX_NO_OF_PRODUCERS];
 static struct task_struct *ctx_consumer_thread[MAX_NO_OF_CONSUMERS];
 
-// use fill and use to keep track of the buffer
+// Use fill and use to keep track of the buffer
 struct process_info buffer[MAX_BUFFER_SIZE];
 int fill = 0;
 int use = 0;
 
-// TODO Define your input parameters (buffSize, prod, cons, uuid) here
-// Then use module_param to pass them from insmod command line. (--Assignment 2)
+// Input parameters
+static int buffSize = 10;
+static int prod = 1;
+static int cons = 1;
+static int uuid = 1000;
 
-// TODO Define your semaphores here (empty, full, mutex) -- Assignment 3
+module_param(buffSize, int, 0);
+MODULE_PARM_DESC(buffSize, "Buffer size");
+module_param(prod, int, 0);
+MODULE_PARM_DESC(prod, "Number of producers");
+module_param(cons, int, 0);
+MODULE_PARM_DESC(cons, "Number of consumers");
+module_param(uuid, int, 0);
+MODULE_PARM_DESC(uuid, "User ID");
+
+// Define semaphores
+static struct semaphore empty, full, mutex;
 
 int producer_thread_function(void *pv)
 {
@@ -68,14 +80,22 @@ int producer_thread_function(void *pv)
 	{
 		if (task->cred->uid.val == uuid)
 		{
-			// TODO Implement your producer kernel thread here
-			// use kthread_should_stop() to check if the kernel thread should stop
-			// use down() and up() for semaphores
-			// Hint: Please refer to sample code to see how to use process_info struct
-			// Hint: kthread_should_stop() should be checked after down() and before up()
+			if (kthread_should_stop())
+				break;
+
+			down(&empty);
+			down(&mutex);
+
+			buffer[fill].pid = task->pid;
+			buffer[fill].start_time = task->start_time;
+			buffer[fill].boot_time = ktime_get_boottime_ns();
+			fill = (fill + 1) % buffSize;
+
+			up(&mutex);
+			up(&full);
 
 			total_no_of_process_produced++;
-			PCINFO("[%s] Produce-Item#:%d at buffer index: %d for PID:%d \n", current->comm,
+			PCINFO("[%s] Produce-Item#:%d at buffer index: %d for PID:%d\n", current->comm,
 				   total_no_of_process_produced, (fill + buffSize - 1) % buffSize, task->pid);
 		}
 	}
@@ -92,25 +112,33 @@ int consumer_thread_function(void *pv)
 
 	while (!kthread_should_stop())
 	{
-		// TODO Implement your consumer kernel thread here
-		// use end_flag (see kernel module exit function) to check if the kernel thread should stop
-		// if end_flag, then break
-		// use down() and up() for semaphores
-		// Hint: Please refer to sample code to see how to use process_info struct
-		// Hint: end_flag should be checked after down() and before up()
+		if (end_flag)
+			break;
 
-		unsigned long long ktime = ktime_get_ns();
-		unsigned long long process_time_elapsed = (ktime - start_time_ns) / 1000000000;
-		total_time_elapsed += ktime - start_time_ns;
+		down(&full);
+		down(&mutex);
 
-		unsigned long long process_time_hr = process_time_elapsed / 3600;
-		unsigned long long process_time_min = (process_time_elapsed - 3600 * process_time_hr) / 60;
-		unsigned long long process_time_sec = (process_time_elapsed - 3600 * process_time_hr) - (process_time_min * 60);
+		struct process_info process = buffer[use];
+		use = (use + 1) % buffSize;
 
-		no_of_process_consumed++;
-		total_no_of_process_consumed++;
-		PCINFO("[%s] Consumed Item#-%d on buffer index:%d::PID:%lu \t Elapsed Time %llu:%llu:%llu \n", current->comm,
-			   no_of_process_consumed, (use + buffSize - 1) % buffSize, process_pid, process_time_hr, process_time_min, process_time_sec);
+		up(&mutex);
+		up(&empty);
+
+		if (process.pid != 0)
+		{
+			unsigned long long ktime = ktime_get_ns();
+			unsigned long long process_time_elapsed = (ktime - process.start_time) / 1000000000;
+			total_time_elapsed += ktime - process.start_time;
+
+			unsigned long long process_time_hr = process_time_elapsed / 3600;
+			unsigned long long process_time_min = (process_time_elapsed - 3600 * process_time_hr) / 60;
+			unsigned long long process_time_sec = (process_time_elapsed - 3600 * process_time_hr) - (process_time_min * 60);
+
+			no_of_process_consumed++;
+			total_no_of_process_consumed++;
+			PCINFO("[%s] Consumed Item#-%d on buffer index:%d::PID:%lu \t Elapsed Time %llu:%llu:%llu\n", current->comm,
+				   no_of_process_consumed, (use + buffSize - 1) % buffSize, process.pid, process_time_hr, process_time_min, process_time_sec);
+		}
 	}
 
 	PCINFO("[%s] Consumer Thread stopped.\n", current->comm);
@@ -150,26 +178,39 @@ static int __init thread_init_module(void)
 	PCINFO("CSE330 Project-1 Kernel Module Inserted\n");
 	PCINFO("Kernel module received the following inputs: UID:%d, Buffer-Size:%d, No of Producer:%d, No of Consumer:%d", uuid, buffSize, prod, cons);
 
-	if (buffSize > 0 && (prod >= 0 && prod < 2))
+	if (buffSize > 0 && (prod >= 0 && prod < 2) && (cons > 0))
 	{
-		// TODO initialize the semaphores here
+		sema_init(&empty, buffSize);
+		sema_init(&full, 0);
+		sema_init(&mutex, 1);
 
 		name_threads();
 
 		for (int index = 0; index < buffSize; index++)
 			buffer[index] = process_default_info;
 
-		// TODO use kthread_run to create producer kernel threads here
-		// Hint: Please refer to sample code to see how to use kthread_run, kthread_should_stop, kthread_stop, etc.
-		// Hint: use ctx_producer_thread[index] to store the return value of kthread_run
+		for (int index = 0; index < prod; index++)
+		{
+			ctx_producer_thread[index] = kthread_run(producer_thread_function, NULL, producers[index]);
+			if (IS_ERR(ctx_producer_thread[index]))
+			{
+				pr_err("Failed to create producer thread %d\n", index);
+				return PTR_ERR(ctx_producer_thread[index]);
+			}
+		}
 
-		// TODO use kthread_run to create consumer kernel threads here
-		// Hint: Please refer to sample code to see how to use kthread_run, kthread_should_stop, kthread_stop, etc.
-		// Hint: use ctx_consumer_thread[index] to store the return value of kthread_run
+		for (int index = 0; index < cons; index++)
+		{
+			ctx_consumer_thread[index] = kthread_run(consumer_thread_function, NULL, consumers[index]);
+			if (IS_ERR(ctx_consumer_thread[index]))
+			{
+				pr_err("Failed to create consumer thread %d\n", index);
+				return PTR_ERR(ctx_consumer_thread[index]);
+			}
+		}
 	}
 	else
 	{
-		// Input Validation Failed
 		PCINFO("Incorrect Input Parameter Configuration Received. No kernel threads started. Please check input parameters.");
 		PCINFO("The kernel module expects buffer size (a positive number) and # of producers(0 or 1) and # of consumers > 0");
 	}
@@ -219,7 +260,6 @@ static void __exit thread_exit_module(void)
 				continue;
 		}
 
-		// total_time_elapsed is now in nsec
 		total_time_elapsed = total_time_elapsed / 1000000000;
 
 		unsigned long long total_time_hr = total_time_elapsed / 3600;
@@ -228,7 +268,7 @@ static void __exit thread_exit_module(void)
 
 		PCINFO("Total number of items produced: %d", total_no_of_process_produced);
 		PCINFO("Total number of items consumed: %d", total_no_of_process_consumed);
-		PCINFO("The total elapsed time of all processes for UID %d is \t%llu:%llu:%llu  \n", uuid, total_time_hr, total_time_min, total_time_sec);
+		PCINFO("The total elapsed time of all processes for UID %d is \t%llu:%llu:%llu\n", uuid, total_time_hr, total_time_min, total_time_sec);
 	}
 
 	PCINFO("CSE330 Project 1 Kernel Module Removed\n");
